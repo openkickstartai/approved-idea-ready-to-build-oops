@@ -29,10 +29,12 @@ def test_add_and_search():
 
 def test_search_no_results():
     runner, db = make_runner()
+    runner.invoke(cli, ["add", "some random error", "some fix"])
     res = runner.invoke(cli, ["search", "nonexistent_xyz"])
     assert res.exit_code == 0
     assert "No matching" in res.output
     cleanup(db)
+
 
 
 def test_list_entries():
@@ -91,4 +93,71 @@ def test_shell_hook_bash():
     res = runner.invoke(cli, ["shell-hook", "bash"])
     assert res.exit_code == 0
     assert "PROMPT_COMMAND" in res.output
+    cleanup(db)
+
+
+# --- Fuzzy search tests ---
+
+def test_fuzzy_search_empty_db():
+    """Searching an empty DB should print a friendly message and exit code 1."""
+    runner, db = make_runner()
+    res = runner.invoke(cli, ["search", "anything"])
+    assert res.exit_code == 1
+    assert "empty" in res.output.lower()
+    cleanup(db)
+
+
+def test_fuzzy_search_partial_match():
+    """Fuzzy search finds entries even with a partial/similar query."""
+    runner, db = make_runner()
+    runner.invoke(
+        cli,
+        ["add", "ModuleNotFoundError: No module named 'pandas'",
+         "pip install pandas", "--tags", "python,pip"],
+    )
+    runner.invoke(
+        cli,
+        ["add", "ImportError: cannot import name 'foo'", "check import path"],
+    )
+    res = runner.invoke(cli, ["search", "ModuleNotFoundError pandas"])
+    assert res.exit_code == 0
+    assert "% match" in res.output
+    assert "pip install pandas" in res.output
+    assert "ID:" in res.output
+    cleanup(db)
+
+
+def test_fuzzy_search_limit():
+    """--limit flag restricts the number of results shown."""
+    runner, db = make_runner()
+    for i in range(10):
+        runner.invoke(cli, ["add", f"error_{i} common_token", f"fix_{i}"])
+    res = runner.invoke(cli, ["search", "common_token", "--limit", "3"])
+    assert res.exit_code == 0
+    matches = res.output.count("% match")
+    assert matches == 3
+    cleanup(db)
+
+
+def test_fuzzy_search_ranking():
+    """Results are ranked by similarity score descending."""
+    runner, db = make_runner()
+    # Entry with lower similarity (fewer matching tokens)
+    runner.invoke(
+        cli,
+        ["add", "KeyError happened somewhere", "try except block"],
+    )
+    # Entry with higher similarity (more matching tokens from query)
+    runner.invoke(
+        cli,
+        ["add", "KeyError: missing key name in dict", "use dict.get with default"],
+    )
+    res = runner.invoke(cli, ["search", "KeyError missing key name"])
+    assert res.exit_code == 0
+    output = res.output
+    # Higher-similarity result (dict.get) should appear before lower one (try except)
+    pos_high = output.find("use dict.get")
+    pos_low = output.find("try except")
+    assert pos_high != -1 and pos_low != -1, "Both entries should appear in results"
+    assert pos_high < pos_low, "Higher similarity result should be listed first"
     cleanup(db)
